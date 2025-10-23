@@ -155,6 +155,22 @@ void parseGGA(String nmea) {
     Serial.print("Latitude DEC : "); Serial.println(latitudeDec, 6);
     Serial.print("Longitude DEC: "); Serial.println(longitudeDec, 6);
     Serial.println("===========================================");
+      if (WiFi.status() == WL_CONNECTED && millis() - last_request >= delay_iot) {
+    if (latitudeRaw != "" && longitudeRaw != "") {
+prosesData("&latd=" + String(latitudeDec, 6) + "&lotd=" + String(longitudeDec, 6));
+    } else {
+      Serial.println("⚠️ Data GPS belum tersedia, menunggu fix...");
+    }
+    last_request = millis();
+
+    String out_1 = data["out_1"] | "0";
+    String out_2 = data["out_2"] | "0";
+    String out_3 = data["out_3"] | "0";
+
+    Serial.println("out_1: " + out_1);
+    Serial.println("out_2: " + out_2);
+    Serial.println("out_3: " + out_3);
+  }
   }
 }
 
@@ -257,22 +273,7 @@ void loop() {
   proximityWasActive = proximityNowActive;
 
   // ==== Kirim data ke server ====
-  if (WiFi.status() == WL_CONNECTED && millis() - last_request >= delay_iot) {
-    if (latitudeRaw != "" && longitudeRaw != "") {
-      prosesData("&latd=" + String(latitudeDec) + "&lotd=" + String(longitudeDec));
-    } else {
-      Serial.println("⚠️ Data GPS belum tersedia, menunggu fix...");
-    }
-    last_request = millis();
 
-    String out_1 = data["out_1"] | "0";
-    String out_2 = data["out_2"] | "0";
-    String out_3 = data["out_3"] | "0";
-
-    Serial.println("out_1: " + out_1);
-    Serial.println("out_2: " + out_2);
-    Serial.println("out_3: " + out_3);
-  }
 
   delay(500);
 }
