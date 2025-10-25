@@ -1,0 +1,67 @@
+#include <Arduino.h>
+
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+
+// GPS Setup
+int RXPin = 16;
+int TXPin = 17;
+int GPSBaud = 57600;
+TinyGPSPlus gps;
+SoftwareSerial gpsSerial(RXPin, TXPin);
+// Global koordinat
+double lat = 0;
+double lng = 0;
+
+int koordinat(unsigned long timeoutMillis = 1000) {
+unsigned long start = millis();
+bool dataMasuk = false;
+ 
+while (millis() - start < timeoutMillis) {
+while (gpsSerial.available() > 0) {
+char c = gpsSerial.read();
+dataMasuk = true;
+if (gps.encode(c)) {
+if (gps.location.isValid()) {
+lat = gps.location.lat();
+lng = gps.location.lng();
+return 1; // Lokasi valid
+}
+}
+}
+}
+ 
+if (!dataMasuk) {
+return -1; // Belum ada data masuk
+} else {
+return 0; // Data ada tapi belum valid
+}
+}
+
+
+
+void setup()
+{
+Serial.begin(9600);
+gpsSerial.begin(GPSBaud);
+
+}
+void loop(){
+int status = koordinat(1000);
+if (status == 1) {
+String lokasi = String(lat, 6) + "," + String(lng, 6);
+Serial.println(lokasi);
+}
+else if (status == -1) {
+Serial.println("waiting GPS...");
+}
+else {
+Serial.println("No location...");
+}
+ 
+delay(1000);
+
+
+}
+
+

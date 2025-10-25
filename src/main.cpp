@@ -2,10 +2,12 @@
 //  Proyek: Tongkat Tunanetra Arah + DFPlayer + Sensor Air + Proximity + GPS
 //  Board: ESP32
 //  Perbaikan: Kirim data HTTPClient hanya setelah GPS DEC dicetak
+//  Modifikasi: Gunakan char buffer untuk parsing GPS guna menghindari fragmentasi memory dan potensi crash Guru Meditation
 // ===============================================================
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <string.h> // Untuk strncmp, strcpy, dll.
 
 #ifdef ESP32
 #include <WiFi.h>
@@ -59,10 +61,10 @@ bool waterWasWet = false;
 bool proximityWasActive = false;
 
 // ===== Variabel koordinat GPS =====
-String latitudeRaw = "";
-String longitudeRaw = "";
-String latDir = "";
-String lonDir = "";
+char latitudeRaw[20] = "";
+char longitudeRaw[20] = "";
+char latDir[2] = "";
+char lonDir[2] = "";
 float latitudeDec = 0.0;
 float longitudeDec = 0.0;
 
@@ -78,9 +80,9 @@ float getDistance(int trigPin, int echoPin) {
 }
 
 // ===== Fungsi konversi GPS mentah ke desimal =====
-float convertToDecimal(String rawValue) {
-    if (rawValue == "") return 0.0;
-    float val = rawValue.toFloat();
+float convertToDecimal(const char* rawValue) {
+    if (strlen(rawValue) == 0) return 0.0;
+    float val = atof(rawValue);
     int degrees = int(val / 100);
     float minutes = val - (degrees * 100);
     return degrees + (minutes / 60.0);
@@ -133,24 +135,37 @@ void prosesData() {
 }
 
 // ===== Fungsi parsing GGA =====
-void parseGGA(String nmea) {
+void parseGGA(const char* nmea) {
+    char fields[15][30] = {0}; // Array untuk fields, max 30 char per field
     int fieldIndex = 0;
-    String fields[15];
-    for (int i = 0; i < nmea.length(); i++) {
-        if (nmea[i] == ',') fieldIndex++;
-        else fields[fieldIndex] += nmea[i];
+    char *p = (char*)nmea;
+    char *start = p;
+
+    while (*p && fieldIndex < 15) {
+        if (*p == ',') {
+            *p = '\0';
+            strcpy(fields[fieldIndex], start);
+            fieldIndex++;
+            start = p + 1;
+        }
+        p++;
+    }
+    // Field terakhir
+    if (fieldIndex < 15) {
+        strcpy(fields[fieldIndex], start);
+        fieldIndex++;
     }
 
-    latitudeRaw = fields[2];
-    latDir = fields[3];
-    longitudeRaw = fields[4];
-    lonDir = fields[5];
+    strcpy(latitudeRaw, fields[2]);
+    strcpy(latDir, fields[3]);
+    strcpy(longitudeRaw, fields[4]);
+    strcpy(lonDir, fields[5]);
 
-    if (latitudeRaw != "" && longitudeRaw != "") {
+    if (strlen(latitudeRaw) > 0 && strlen(longitudeRaw) > 0) {
         latitudeDec = convertToDecimal(latitudeRaw);
         longitudeDec = convertToDecimal(longitudeRaw);
-        if (latDir == "S") latitudeDec = -latitudeDec;
-        if (lonDir == "W") longitudeDec = -longitudeDec;
+        if (strcmp(latDir, "S") == 0) latitudeDec = -latitudeDec;
+        if (strcmp(lonDir, "W") == 0) longitudeDec = -longitudeDec;
 
         // Tampilkan di Serial Monitor
         Serial.println("===========================================");
@@ -203,16 +218,18 @@ void setup() {
 // ===== LOOP =====
 void loop() {
     // ==== BACA DATA GPS ====
-    static String nmeaLine = "";
+    static char nmeaLine[256];
+    static int idx = 0;
     while (gpsSerial.available()) {
         char c = gpsSerial.read();
         if (c == '\n') {
-            if (nmeaLine.startsWith("$GNGGA") || nmeaLine.startsWith("$GPGGA")) {
+            nmeaLine[idx] = '\0';
+            if (strncmp(nmeaLine, "$GNGGA", 6) == 0 || strncmp(nmeaLine, "$GPGGA", 6) == 0) {
                 parseGGA(nmeaLine); // prosesData dipanggil di sini
             }
-            nmeaLine = "";
-        } else {
-            nmeaLine += c;
+            idx = 0;
+        } else if (c != '\r') {
+            if (idx < 255) nmeaLine[idx++] = c;
         }
     }
 
@@ -222,7 +239,7 @@ void loop() {
     float jarakDepan = getDistance(TRIG_DEPAN, ECHO_DEPAN);
 
     bool waterNowWet = (digitalRead(WATER_SENSOR) == HIGH);
-    bool proximityNowActive = (digitalRead(PROXIMITY_SENSOR) == HIGH);
+    bool proximityNowActive = (digitalRead(PROXIMITY_SENSOR) == LOW);
 
     Serial.print("Kanan: "); Serial.print(jarakKanan); Serial.print(" cm | ");
     Serial.print("Kiri: "); Serial.print(jarakKiri); Serial.print(" cm | ");
@@ -253,11 +270,11 @@ void loop() {
         Serial.println("💧 Sensor air BASAH! Memutar 0003.mp3 sekali.");
         lastPlayTime = waktuSekarang;
     } 
-    else if (proximityNowActive && !proximityWasActive && waktuSekarang - lastPlayTime > delayAntarAudio) {
-        myDFPlayer.play(2);
-        Serial.println("🚶 Sensor proximity AKTIF! Memutar 0002.mp3 sekali.");
-        lastPlayTime = waktuSekarang;
-    }
+else if (proximityNowActive && waktuSekarang - lastPlayTime > delayAntarAudio) {
+    myDFPlayer.play(2);
+    Serial.println("🚶 Sensor proximity AKTIF! Memutar 0002.mp3 berulang.");
+    lastPlayTime = waktuSekarang;
+}
 
     waterWasWet = waterNowWet;
     proximityWasActive = proximityNowActive;
