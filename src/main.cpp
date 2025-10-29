@@ -1,13 +1,12 @@
 // ===============================================================
 //  Proyek: Tongkat Tunanetra Arah + DFPlayer + Sensor Air + Proximity + GPS
 //  Board: ESP32
-//  Perbaikan: Kirim data HTTPClient hanya setelah GPS DEC dicetak
-//  Modifikasi: Gunakan char buffer untuk parsing GPS guna menghindari fragmentasi memory dan potensi crash Guru Meditation
+//  Versi: Final Stable + Kirim API Saat Sensor Air/Proximity Berubah
 // ===============================================================
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <string.h> // Untuk strncmp, strcpy, dll.
+#include <string.h>
 
 #ifdef ESP32
 #include <WiFi.h>
@@ -25,9 +24,17 @@ const char* password = "password-iot";
 const char* server_url = "http://labrobotika.go-web.my.id/server.php?apikey=";
 const char* apikey = "d5191f277ec094e277e96155cc4a4215";
 
-unsigned long delay_iot = 5000; // minimal interval HTTP request
+// ===== Variabel waktu =====
 unsigned long last_request = 0;
+unsigned long lastSensorSend = 0; // interval kirim data sensor 7 detik
 
+// ===== Variabel sensor =====
+float jarakKanan = 0;
+float jarakKiri  = 0;
+float jarakDepan = 0;
+float maksKananKiri=60;
+bool waterWasWet = false;
+bool proximityWasActive = false;
 DynamicJsonDocument data(2048);
 
 // ===== Pin Sensor Ultrasonik =====
@@ -54,230 +61,251 @@ HardwareSerial gpsSerial(2);
 #define GPS_TX 32
 #define GPS_BAUD 57600
 
-// ===== Variabel =====
-unsigned long lastPlayTime = 0;
-const unsigned long delayAntarAudio = 3000;
-bool waterWasWet = false;
-bool proximityWasActive = false;
-
-// ===== Variabel koordinat GPS =====
+// ===== Variabel GPS =====
 char latitudeRaw[20] = "";
 char longitudeRaw[20] = "";
 char latDir[2] = "";
 char lonDir[2] = "";
 float latitudeDec = 0.0;
 float longitudeDec = 0.0;
+bool gpsValid = false;
+
+// ===== Variabel Audio =====
+unsigned long lastPlayTime = 0;
+const unsigned long delayAntarAudio = 3000;
 
 // ===== Fungsi ukur jarak =====
 float getDistance(int trigPin, int echoPin) {
-    digitalWrite(trigPin, LOW);
-    delayMicroseconds(2);
-    digitalWrite(trigPin, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(trigPin, LOW);
-    long duration = pulseIn(echoPin, HIGH, 25000);
-    return duration * 0.034 / 2;
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 25000);
+  return duration * 0.034 / 2;
 }
 
-// ===== Fungsi konversi GPS mentah ke desimal =====
+// ===== Konversi GPS =====
 float convertToDecimal(const char* rawValue) {
-    if (strlen(rawValue) == 0) return 0.0;
-    float val = atof(rawValue);
-    int degrees = int(val / 100);
-    float minutes = val - (degrees * 100);
-    return degrees + (minutes / 60.0);
+  if (strlen(rawValue) == 0) return 0.0;
+  float val = atof(rawValue);
+  int degrees = int(val / 100);
+  float minutes = val - (degrees * 100);
+  return degrees + (minutes / 60.0);
 }
 
 // ===== WiFi =====
 void setupWiFi() {
-    WiFi.begin(ssid, password);
-    Serial.print("Menghubungkan WiFi");
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-        delay(1000);
-        Serial.print(".");
-        attempts++;
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println(" WiFi Terhubung!");
-        Serial.print("IP: ");
-        Serial.println(WiFi.localIP());
-    } else {
-        Serial.println(" Gagal terhubung ke WiFi.");
-    }
+  WiFi.begin(ssid, password);
+  Serial.print("Menghubungkan WiFi");
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+    delay(1000);
+    Serial.print(".");
+    attempts++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(" Terhubung!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println(" Gagal terhubung ke WiFi.");
+  }
 }
 
 // ===== Kirim data ke server =====
-void prosesData() {
-    if (WiFi.status() != WL_CONNECTED) return;
-    if (millis() - last_request < delay_iot) return;
+void prosesData(bool gpsBaru = false) {
+  if (WiFi.status() != WL_CONNECTED) return;
 
-    HTTPClient http;
-    String url = String(server_url) + String(apikey) + "&latd=" + String(latitudeDec, 6) + "&lotd=" + String(longitudeDec, 6);
-    url.replace(" ", "%20");
-    Serial.println("Request ke: " + url);
-    http.begin(url);
-    http.addHeader("Accept", "application/json");
-    int httpCode = http.GET();
-    if (httpCode == HTTP_CODE_OK) {
-        String response = http.getString();
-        DeserializationError err = deserializeJson(data, response);
-        if (err) {
-            Serial.println("Gagal parsing JSON: " + String(err.c_str()));
-        } else {
-            Serial.println("Data JSON diterima.");
-        }
+  String url = String(server_url) + String(apikey);
+
+  // Tambahkan data GPS jika sudah valid
+  if (gpsValid) {
+    url += "&latd=" + String(latitudeDec, 6);
+    url += "&lotd=" + String(longitudeDec, 6);
+  }
+
+  // Tambahkan data sensor
+  url += "&kiri=" + String(jarakKiri, 2);
+  url += "&kanan=" + String(jarakKanan, 2);
+  url += "&depan=" + String(jarakDepan, 2);
+  url += "&water=" + String(waterWasWet ? "1" : "0");
+  url += "&proximity=" + String(proximityWasActive ? "1" : "0");
+
+  url.replace(" ", "%20");
+
+  Serial.println("Request ke: " + url);
+
+  HTTPClient http;
+  http.begin(url);
+  http.addHeader("Accept", "application/json");
+  int httpCode = http.GET();
+
+  if (httpCode == HTTP_CODE_OK) {
+    String response = http.getString();
+    DeserializationError err = deserializeJson(data, response);
+    if (err) {
+      Serial.println("Gagal parsing JSON: " + String(err.c_str()));
     } else {
-        Serial.println("HTTP Error: " + String(httpCode));
+      Serial.println("Data JSON diterima.");
     }
-    http.end();
-    last_request = millis();
+  } else {
+    Serial.println("HTTP Error: " + String(httpCode));
+  }
+
+  http.end();
+  last_request = millis();
 }
 
-// ===== Fungsi parsing GGA =====
+// ===== Parsing GPS =====
 void parseGGA(const char* nmea) {
-    char fields[15][30] = {0}; // Array untuk fields, max 30 char per field
-    int fieldIndex = 0;
-    char *p = (char*)nmea;
-    char *start = p;
+  char fields[15][30] = {0};
+  int fieldIndex = 0;
+  char *p = (char*)nmea;
+  char *start = p;
 
-    while (*p && fieldIndex < 15) {
-        if (*p == ',') {
-            *p = '\0';
-            strcpy(fields[fieldIndex], start);
-            fieldIndex++;
-            start = p + 1;
-        }
-        p++;
+  while (*p && fieldIndex < 15) {
+    if (*p == ',') {
+      *p = '\0';
+      strcpy(fields[fieldIndex], start);
+      fieldIndex++;
+      start = p + 1;
     }
-    // Field terakhir
-    if (fieldIndex < 15) {
-        strcpy(fields[fieldIndex], start);
-        fieldIndex++;
-    }
+    p++;
+  }
+  if (fieldIndex < 15) {
+    strcpy(fields[fieldIndex], start);
+    fieldIndex++;
+  }
 
-    strcpy(latitudeRaw, fields[2]);
-    strcpy(latDir, fields[3]);
-    strcpy(longitudeRaw, fields[4]);
-    strcpy(lonDir, fields[5]);
+  strcpy(latitudeRaw, fields[2]);
+  strcpy(latDir, fields[3]);
+  strcpy(longitudeRaw, fields[4]);
+  strcpy(lonDir, fields[5]);
 
-    if (strlen(latitudeRaw) > 0 && strlen(longitudeRaw) > 0) {
-        latitudeDec = convertToDecimal(latitudeRaw);
-        longitudeDec = convertToDecimal(longitudeRaw);
-        if (strcmp(latDir, "S") == 0) latitudeDec = -latitudeDec;
-        if (strcmp(lonDir, "W") == 0) longitudeDec = -longitudeDec;
+  if (strlen(latitudeRaw) > 0 && strlen(longitudeRaw) > 0) {
+    latitudeDec = convertToDecimal(latitudeRaw);
+    longitudeDec = convertToDecimal(longitudeRaw);
+    if (strcmp(latDir, "S") == 0) latitudeDec = -latitudeDec;
+    if (strcmp(lonDir, "W") == 0) longitudeDec = -longitudeDec;
+    gpsValid = true;
 
-        // Tampilkan di Serial Monitor
-        Serial.println("===========================================");
-        Serial.print("Latitude RAW : "); Serial.println(latitudeRaw);
-        Serial.print("Longitude RAW: "); Serial.println(longitudeRaw);
-        Serial.print("Latitude DEC : "); Serial.println(latitudeDec, 6);
-        Serial.print("Longitude DEC: "); Serial.println(longitudeDec, 6);
-        Serial.println("===========================================");
+    Serial.println("===========================================");
+    Serial.print("Latitude DEC : "); Serial.println(latitudeDec, 6);
+    Serial.print("Longitude DEC: "); Serial.println(longitudeDec, 6);
+    Serial.println("===========================================");
 
-        // ==== Kirim data ke server setelah dicetak ====
-        prosesData();
-    }
+    // Baca sensor dulu sebelum kirim GPS
+    jarakKanan = getDistance(TRIG_KANAN, ECHO_KANAN);
+    jarakKiri  = getDistance(TRIG_KIRI, ECHO_KIRI);
+    jarakDepan = getDistance(TRIG_DEPAN, ECHO_DEPAN);
+
+    prosesData(true);
+  }
 }
 
 // ===== SETUP =====
 void setup() {
-    Serial.begin(115200);
-    Serial.println("=== Sistem Tongkat Tunanetra dengan GPS Mentah + Desimal ===");
+  Serial.begin(115200);
+  Serial.println("=== Sistem Tongkat Tunanetra (Final) ===");
 
-    // Sensor ultrasonik
-    pinMode(TRIG_KANAN, OUTPUT);
-    pinMode(ECHO_KANAN, INPUT);
-    pinMode(TRIG_KIRI, OUTPUT);
-    pinMode(ECHO_KIRI, INPUT);
-    pinMode(TRIG_DEPAN, OUTPUT);
-    pinMode(ECHO_DEPAN, INPUT);
+  pinMode(TRIG_KANAN, OUTPUT);
+  pinMode(ECHO_KANAN, INPUT);
+  pinMode(TRIG_KIRI, OUTPUT);
+  pinMode(ECHO_KIRI, INPUT);
+  pinMode(TRIG_DEPAN, OUTPUT);
+  pinMode(ECHO_DEPAN, INPUT);
 
-    // Sensor air & proximity
-    pinMode(WATER_SENSOR, INPUT);
-    pinMode(PROXIMITY_SENSOR, INPUT);
+  pinMode(WATER_SENSOR, INPUT);
+  pinMode(PROXIMITY_SENSOR, INPUT);
 
-    // DFPlayer
-    dfSerial.begin(9600, SERIAL_8N1, DF_RX, DF_TX);
-    Serial.println("Menghubungkan DFPlayer Mini...");
-    if (!myDFPlayer.begin(dfSerial)) {
-        Serial.println("❌ Gagal terhubung ke DFPlayer Mini!");
-        while (true);
-    }
-    myDFPlayer.volume(25);
-    Serial.println("✅ DFPlayer Mini Siap!");
+  dfSerial.begin(9600, SERIAL_8N1, DF_RX, DF_TX);
+  Serial.println("Menghubungkan DFPlayer Mini...");
+  if (!myDFPlayer.begin(dfSerial)) {
+    Serial.println("❌ Gagal terhubung ke DFPlayer Mini!");
+    while (true);
+  }
+  myDFPlayer.volume(25);
+  Serial.println("✅ DFPlayer Mini Siap!");
 
-    // GPS
-    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
-    Serial.println("✅ GPS Beitian Siap (baud 57600)");
+  gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
+  Serial.println("✅ GPS Beitian Siap (baud 57600)");
 
-    // WiFi
-    setupWiFi();
+  setupWiFi();
 }
 
 // ===== LOOP =====
 void loop() {
-    // ==== BACA DATA GPS ====
-    static char nmeaLine[256];
-    static int idx = 0;
-    while (gpsSerial.available()) {
-        char c = gpsSerial.read();
-        if (c == '\n') {
-            nmeaLine[idx] = '\0';
-            if (strncmp(nmeaLine, "$GNGGA", 6) == 0 || strncmp(nmeaLine, "$GPGGA", 6) == 0) {
-                parseGGA(nmeaLine); // prosesData dipanggil di sini
-            }
-            idx = 0;
-        } else if (c != '\r') {
-            if (idx < 255) nmeaLine[idx++] = c;
-        }
+  // ==== BACA DATA GPS ====
+  static char nmeaLine[256];
+  static int idx = 0;
+  while (gpsSerial.available()) {
+    char c = gpsSerial.read();
+    if (c == '\n') {
+      nmeaLine[idx] = '\0';
+      if (strncmp(nmeaLine, "$GNGGA", 6) == 0 || strncmp(nmeaLine, "$GPGGA", 6) == 0) {
+        parseGGA(nmeaLine);
+      }
+      idx = 0;
+    } else if (c != '\r') {
+      if (idx < 255) nmeaLine[idx++] = c;
     }
+  }
 
-    // ==== Sensor jarak ====
-    float jarakKanan = getDistance(TRIG_KANAN, ECHO_KANAN);
-    float jarakKiri  = getDistance(TRIG_KIRI, ECHO_KIRI);
-    float jarakDepan = getDistance(TRIG_DEPAN, ECHO_DEPAN);
+  // ==== BACA SENSOR ====
+  jarakKanan = getDistance(TRIG_KANAN, ECHO_KANAN);
+  jarakKiri  = getDistance(TRIG_KIRI, ECHO_KIRI);
+  jarakDepan = getDistance(TRIG_DEPAN, ECHO_DEPAN);
 
-    bool waterNowWet = (digitalRead(WATER_SENSOR) == HIGH);
-    bool proximityNowActive = (digitalRead(PROXIMITY_SENSOR) == LOW);
+  bool waterNowWet = (digitalRead(WATER_SENSOR) == HIGH);
+  bool proximityNowActive = (digitalRead(PROXIMITY_SENSOR) == LOW);
 
-    Serial.print("Kanan: "); Serial.print(jarakKanan); Serial.print(" cm | ");
-    Serial.print("Kiri: "); Serial.print(jarakKiri); Serial.print(" cm | ");
-    Serial.print("Depan: "); Serial.print(jarakDepan); Serial.print(" cm | ");
-    Serial.print("Air: "); Serial.print(waterNowWet ? "Basah" : "Kering"); Serial.print(" | ");
-    Serial.print("Proximity: "); Serial.println(proximityNowActive ? "Objek" : "Tidak");
+  Serial.print("Kanan: "); Serial.print(jarakKanan); Serial.print(" cm | ");
+  Serial.print("Kiri: "); Serial.print(jarakKiri); Serial.print(" cm | ");
+  Serial.print("Depan: "); Serial.print(jarakDepan); Serial.print(" cm | ");
+  Serial.print("Air: "); Serial.print(waterNowWet ? "Basah" : "Kering"); Serial.print(" | ");
+  Serial.print("Proximity: "); Serial.println(proximityNowActive ? "Objek" : "Tidak");
 
-    unsigned long waktuSekarang = millis();
+  unsigned long waktuSekarang = millis();
 
-    // ==== Audio sesuai kondisi ====
-    if (jarakKanan > 0 && jarakKanan < 10 && waktuSekarang - lastPlayTime > delayAntarAudio) {
-        myDFPlayer.play(6);
-        Serial.println("🔊 Objek di KANAN! Memutar 0006.mp3");
-        lastPlayTime = waktuSekarang;
-    } 
-    else if (jarakKiri > 0 && jarakKiri < 10 && waktuSekarang - lastPlayTime > delayAntarAudio) {
-        myDFPlayer.play(5);
-        Serial.println("🔊 Objek di KIRI! Memutar 0005.mp3");
-        lastPlayTime = waktuSekarang;
-    } 
-    else if (jarakDepan > 0 && jarakDepan < 60 && waktuSekarang - lastPlayTime > delayAntarAudio) {
-        myDFPlayer.play(4);
-        Serial.println("🔊 Objek di DEPAN! Memutar 0004.mp3");
-        lastPlayTime = waktuSekarang;
-    } 
-    else if (waterNowWet && !waterWasWet && waktuSekarang - lastPlayTime > delayAntarAudio) {
-        myDFPlayer.play(3);
-        Serial.println("💧 Sensor air BASAH! Memutar 0003.mp3 sekali.");
-        lastPlayTime = waktuSekarang;
-    } 
-else if (proximityNowActive && waktuSekarang - lastPlayTime > delayAntarAudio) {
-    myDFPlayer.play(2);
-    Serial.println("🚶 Sensor proximity AKTIF! Memutar 0002.mp3 berulang.");
+  // ==== AUDIO ====
+  if (jarakKanan > 0 && jarakKanan < maksKananKiri && waktuSekarang - lastPlayTime > delayAntarAudio) {
+    myDFPlayer.play(6);
     lastPlayTime = waktuSekarang;
-}
+  } 
+  else if (jarakKiri > 0 && jarakKiri < maksKananKiri && waktuSekarang - lastPlayTime > delayAntarAudio) {
+    myDFPlayer.play(5);
+    lastPlayTime = waktuSekarang;
+  } 
+  else if (jarakDepan > 0 && jarakDepan < 80 && waktuSekarang - lastPlayTime > delayAntarAudio) {
+    myDFPlayer.play(4);
+    lastPlayTime = waktuSekarang;
+  } 
+  else if (waterNowWet && !waterWasWet && waktuSekarang - lastPlayTime > delayAntarAudio) {
+    myDFPlayer.play(3);
+    lastPlayTime = waktuSekarang;
+  } 
+  else if (proximityNowActive && waktuSekarang - lastPlayTime > delayAntarAudio) {
+    myDFPlayer.play(2);
+    lastPlayTime = waktuSekarang;
+  }
 
+  // ==== DETEKSI PERUBAHAN STATUS WATER / PROXIMITY ====
+  if (waterNowWet != waterWasWet || proximityNowActive != proximityWasActive) {
+    Serial.println("📡 Sensor Air/Proximity berubah — kirim data ke server...");
     waterWasWet = waterNowWet;
     proximityWasActive = proximityNowActive;
+    prosesData(false);
+  }
 
-    delay(600); // loop ringan
+  // ==== KIRIM DATA SENSOR TIAP 7 DETIK ====
+  if (millis() - lastSensorSend >= 7000) {
+    jarakKanan = getDistance(TRIG_KANAN, ECHO_KANAN);
+    jarakKiri  = getDistance(TRIG_KIRI, ECHO_KIRI);
+    jarakDepan = getDistance(TRIG_DEPAN, ECHO_DEPAN);
+    prosesData(false);
+    lastSensorSend = millis();
+  }
+
+  delay(600);
 }
