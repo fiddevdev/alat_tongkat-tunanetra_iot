@@ -32,7 +32,7 @@ unsigned long lastSensorSend = 0; // interval kirim data sensor 7 detik
 float jarakKanan = 0;
 float jarakKiri  = 0;
 float jarakDepan = 0;
-float maksKananKiri=60;
+float maksKananKiri=100;
 bool waterWasWet = false;
 bool proximityWasActive = false;
 DynamicJsonDocument data(2048);
