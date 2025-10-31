@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "author": "hafid",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-v1", "id": "esp32", "top": 100, "left": 100 },
+    { "type": "hc-sr04", "id": "ultra1", "top": 40, "left": 400 },
+    { "type": "hc-sr04", "id": "ultra2", "top": 160, "left": 400 },
+    { "type": "hc-sr04", "id": "ultra3", "top": 280, "left": 400 }
+  ],
+  "connections": [
+    ["esp32:5V", "ultra1:VCC", "red", ["h0"]],
+    ["esp32:GND", "ultra1:GND", "black", ["h0"]],
+    ["esp32:13", "ultra1:TRIG", "green", ["h0"]],
+    ["esp32:12", "ultra1:ECHO", "blue", ["h0"]],
+    ["esp32:5V", "ultra2:VCC", "red", ["h1"]],
+    ["esp32:GND", "ultra2:GND", "black", ["h1"]],
+    ["esp32:14", "ultra2:TRIG", "green", ["h1"]],
+    ["esp32:27", "ultra2:ECHO", "blue", ["h1"]],
+    ["esp32:5V", "ultra3:VCC", "red", ["h2"]],
+    ["esp32:GND", "ultra3:GND", "black", ["h2"]],
+    ["esp32:26", "ultra3:TRIG", "green", ["h2"]],
+    ["esp32:25", "ultra3:ECHO", "blue", ["h2"]]
+  ]
+}

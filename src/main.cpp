@@ -32,7 +32,9 @@ unsigned long lastSensorSend = 0; // interval kirim data sensor 7 detik
 float jarakKanan = 0;
 float jarakKiri  = 0;
 float jarakDepan = 0;
-float maksKananKiri=100;
+float threshKanan = 100; // Threshold untuk kanan
+float threshKiri = 100;  // Threshold untuk kiri
+float threshDepan = 80;  // Threshold untuk depan
 bool waterWasWet = false;
 bool proximityWasActive = false;
 DynamicJsonDocument data(2048);
@@ -268,26 +270,41 @@ void loop() {
 
   unsigned long waktuSekarang = millis();
 
-  // ==== AUDIO ====
-  if (jarakKanan > 0 && jarakKanan < maksKananKiri && waktuSekarang - lastPlayTime > delayAntarAudio) {
-    myDFPlayer.play(6);
-    lastPlayTime = waktuSekarang;
-  } 
-  else if (jarakKiri > 0 && jarakKiri < maksKananKiri && waktuSekarang - lastPlayTime > delayAntarAudio) {
-    myDFPlayer.play(5);
-    lastPlayTime = waktuSekarang;
-  } 
-  else if (jarakDepan > 0 && jarakDepan < 80 && waktuSekarang - lastPlayTime > delayAntarAudio) {
-    myDFPlayer.play(4);
-    lastPlayTime = waktuSekarang;
-  } 
-  else if (waterNowWet && !waterWasWet && waktuSekarang - lastPlayTime > delayAntarAudio) {
-    myDFPlayer.play(3);
-    lastPlayTime = waktuSekarang;
-  } 
-  else if (proximityNowActive && waktuSekarang - lastPlayTime > delayAntarAudio) {
-    myDFPlayer.play(2);
-    lastPlayTime = waktuSekarang;
+  // ==== AUDIO: Prioritaskan proximity > water (baru basah) > jarak terdekat ====
+  if (waktuSekarang - lastPlayTime > delayAntarAudio) {
+    if (proximityNowActive) {
+      myDFPlayer.play(2);  // Suara untuk proximity
+      lastPlayTime = waktuSekarang;
+    } 
+    else if (waterNowWet && !waterWasWet) {
+      myDFPlayer.play(3);  // Suara untuk air (hanya jika baru berubah)
+      lastPlayTime = waktuSekarang;
+    } 
+    else {
+      // Cari jarak terdekat di antara sensor ultrasonik yang valid
+      float minDist = 9999;  // Nilai awal tinggi
+      int playCode = 0;      // Kode suara (4=depan, 5=kiri, 6=kanan)
+
+      // Prioritas: Depan > Kiri > Kanan (jika jarak sama)
+      if (jarakDepan > 0 && jarakDepan < threshDepan && jarakDepan < minDist) {
+        minDist = jarakDepan;
+        playCode = 4;
+      }
+      if (jarakKiri > 0 && jarakKiri < threshKiri && jarakKiri < minDist) {
+        minDist = jarakKiri;
+        playCode = 5;
+      }
+      if (jarakKanan > 0 && jarakKanan < threshKanan && jarakKanan < minDist) {
+        minDist = jarakKanan;
+        playCode = 6;
+      }
+
+      // Mainkan suara jika ada yang terdeteksi
+      if (playCode != 0) {
+        myDFPlayer.play(playCode);
+        lastPlayTime = waktuSekarang;
+      }
+    }
   }
 
   // ==== DETEKSI PERUBAHAN STATUS WATER / PROXIMITY ====
